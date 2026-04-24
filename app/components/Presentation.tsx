@@ -17,6 +17,7 @@ type PresentationItem = {
 export default function Presentation() {
   const [query, setQuery] = useState("");
   const [presentations, setPresentations] = useState<PresentationItem[]>([]);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const load = async () => {
@@ -27,6 +28,7 @@ export default function Presentation() {
 
       if (!withPinned.error && withPinned.data) {
         setPresentations(withPinned.data as PresentationItem[]);
+        setLoading(false);
         return;
       }
 
@@ -37,6 +39,7 @@ export default function Presentation() {
       if (!fallback.error && fallback.data) {
         setPresentations((fallback.data as PresentationItem[]).map((x) => ({ ...x, is_pinned: false })));
       }
+      setLoading(false);
     };
     void load();
   }, []);
@@ -46,9 +49,6 @@ export default function Presentation() {
     const base = presentations.filter((p) => p.title.toLowerCase().includes(q) || p.description.toLowerCase().includes(q));
     return [...base].sort((a, b) => Number(!!b.is_pinned) - Number(!!a.is_pinned));
   }, [presentations, query]);
-
-  const imageCount = filtered.reduce((acc, p) => acc + p.media.filter((m) => m.media_type === "image").length, 0);
-  const videoCount = filtered.reduce((acc, p) => acc + p.media.filter((m) => m.media_type === "video").length, 0);
 
   return (
     <main className="min-h-screen bg-linear-to-b from-black to-[#140b0b] p-6 text-white">
@@ -77,12 +77,21 @@ export default function Presentation() {
 
           <div className="mb-4 flex items-center gap-4 text-xs text-white">
             <span>Prezantime: {filtered.length}</span>
-            <span>Media: {imageCount + videoCount}</span>
-            <span>Imazhe: {imageCount}</span>
-            <span>Video: {videoCount}</span>
           </div>
 
           <div className="mt-16 grid gap-4 lg:grid-cols-4">
+            {loading
+              ? Array.from({ length: 8 }).map((_, index) => (
+                  <div key={`skeleton-${index}`} className="overflow-hidden rounded-2xl border border-white/10 p-3">
+                    <div className="h-44 animate-pulse rounded-xl bg-white/10 lg:h-[30vh]" />
+                    <div className="space-y-2 px-3 py-3">
+                      <div className="h-4 w-3/4 animate-pulse rounded bg-white/10" />
+                      <div className="h-3 w-1/2 animate-pulse rounded bg-white/10" />
+                      <div className="mt-3 h-7 w-20 animate-pulse rounded-full bg-white/10" />
+                    </div>
+                  </div>
+                ))
+              : null}
             {filtered.map((p) => (
               <Link
                 href={`/presentation/${p.id}`}
@@ -104,10 +113,6 @@ export default function Presentation() {
                       {p.is_pinned ? "I bllokuar" : "Shiko Prezantimin"}
                     </span>
                   </div>
-                 
-                  <span className="absolute bottom-2 right-2 rounded-full border border-white/25 bg-black/40 px-2 py-0.5 text-[10px] text-white/80">
-                    {p.media?.length ?? 0} file
-                  </span>
                 </div>
                 <div className="space-y-1 px-3 py-2 transition duration-300 group-hover:text-white">
                   <p className="text-lg font-semibold">{p.title}</p>
@@ -116,7 +121,6 @@ export default function Presentation() {
                   </p>
                   <div className="mt-2 flex items-center justify-between">
                     <button className="rounded-full border border-white/20 px-4 py-1 text-xs font-semibold">{p.is_pinned ? "Locked" : "Shiko"}</button>
-                    <span className="text-[10px] text-white/60">{p.media?.length ?? 0} media</span>
                   </div>
                 </div>
               </Link>

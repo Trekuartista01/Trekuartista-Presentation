@@ -84,7 +84,25 @@ export default function PresentationSinglePage({ params }: { params: Promise<{ i
     void load();
   }, [params]);
 
-  if (!loaded) return <main className="min-h-screen bg-linear-to-b from-black via-[#050b14] to-[#000000] p-6 text-white">Loading...</main>;
+  if (!loaded) {
+    return (
+      <main className="min-h-screen bg-linear-to-b from-black via-[#050b14] to-[#000000] p-6 lg:p-16 text-white">
+        <div className="mx-auto grid h-auto w-full grid-cols-1 gap-6">
+          <div className="rounded-3xl bg-white/5 p-5 lg:p-10 backdrop-blur-xl">
+            <div className="mb-5 space-y-3">
+              <div className="h-10 w-2/3 animate-pulse rounded bg-white/10 lg:h-14" />
+              <div className="h-5 w-28 animate-pulse rounded-full bg-white/10" />
+            </div>
+            <div className="grid gap-4 md:grid-cols-3">
+              {Array.from({ length: 6 }).map((_, index) => (
+                <div key={`single-skeleton-${index}`} className="h-56 animate-pulse rounded-2xl bg-white/10 lg:h-[35vh]" />
+              ))}
+            </div>
+          </div>
+        </div>
+      </main>
+    );
+  }
   if (!item) return <main className="min-h-screen bg-linear-to-b from-black via-[#050b14] to-[#000000] p-6 text-white">Prezantimi nuk u gjet.</main>;
   if (isPinned) {
     return (
