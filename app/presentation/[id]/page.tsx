@@ -43,6 +43,10 @@ export default function PresentationSinglePage({ params }: { params: Promise<{ i
         data = (fallback.data as PresentationData | null) ?? null;
         error = fallback.error;
       }
+      if (error && !error.message.toLowerCase().includes("is_pinned")) {
+        setLoaded(true);
+        return;
+      }
 
       if (!error && data) {
         const row = data;
@@ -119,7 +123,7 @@ export default function PresentationSinglePage({ params }: { params: Promise<{ i
   const links = item.description.match(/https?:\/\/[^\s]+/g) ?? [];
   const hasCustomText = customText.trim().length > 0;
   const hasLinks = links.length > 0;
-  const mediaGridClass = layoutCols === 1 ? "grid-cols-1" : "grid-cols-1 md:grid-cols-3";
+  const mediaGridClass = layoutCols === 1 ? "grid-cols-1" : "grid-cols-3";
   const media = item.media ?? [];
   const activeFeaturedCount =
     template === "social" && layoutCols === 3 && featuredFullWidth ? Math.min(Math.max(featuredCount, 0), media.length) : 0;
@@ -129,17 +133,25 @@ export default function PresentationSinglePage({ params }: { params: Promise<{ i
   const gridTexts = mediaTexts.slice(activeFeaturedCount);
 
   return (
-    <main className="min-h-screen bg-linear-to-b from-black via-[#050b14] to-[#000000] p-6 lg:p-16 text-white">
+    <main className="min-h-screen bg-linear-to-b from-black via-[#050b14] to-[#000000] p-2 lg:p-16 text-white">
       <div className="mx-auto grid h-auto w-full grid-cols-1 gap-6">
         <div className="rounded-3xl bg-white/5 p-5 lg:p-10 backdrop-blur-xl">
+          <button
+            type="button"
+            onClick={() => window.history.back()}
+            className="mb-4 inline-flex h-10 w-10 cursor-pointer items-center justify-center rounded-xl border border-white/20 bg-white/10 text-base font-semibold text-white transition hover:bg-white/20"
+            aria-label="Kthehu"
+          >
+            ←
+          </button>
           <div className="mb-5">
-            <h1 className="text-3xl lg:text-5xl font-bold">{item.title}</h1>
+            <h1 className="text-3xl lg:text-5xl font-bold mb-6 lg:mb-10">{item.title}</h1>
             {isPinned ? <p className="mt-2 inline-flex rounded-full border border-amber-300/60 bg-amber-500/10 px-3 py-1 text-xs text-amber-200">🔑 Pinned</p> : null}
           </div>
           {featuredPosition === "top" && featuredMedia.length > 0 ? (
             <div className="mb-4 space-y-4">
               {featuredMedia.map((m, index) => (
-                <div key={`${m.media_url}-${index}`} className={template === "social" && socialMediaWidth === "card" ? "rounded-2xl border border-white/10 bg-[#0d1522] p-3" : ""}>
+                <div key={`${m.media_url}-${index}`}>
                   {m.media_type === "video" ? (
                     <video src={m.media_url} autoPlay loop muted playsInline controls className={`h-auto w-full ${template === "social" && socialMediaWidth === "card" ? "rounded-xl" : ""}`} />
                   ) : (
@@ -153,12 +165,12 @@ export default function PresentationSinglePage({ params }: { params: Promise<{ i
           <div className={`grid h-auto gap-4 ${mediaGridClass}`}>
             {gridMedia.map((m, index) =>
               m.media_type === "video" ? (
-                <div key={`${m.media_url}-${index}`} className={template === "social" && socialMediaWidth === "card" ? "rounded-2xl border border-white/10 bg-[#0d1522] p-3" : ""}>
+                <div key={`${m.media_url}-${index}`}>
                   <video src={m.media_url} autoPlay loop muted playsInline controls className={`h-auto w-full ${template === "social" && socialMediaWidth === "card" ? "rounded-xl" : ""}`} />
                   {template === "social" && (gridTexts[index] ?? "").trim().length > 0 ? <p className="mt-2 text-sm text-white/80">{gridTexts[index]}</p> : null}
                 </div>
               ) : (
-                <div key={`${m.media_url}-${index}`} className={template === "social" && socialMediaWidth === "card" ? "rounded-2xl border border-white/10 bg-[#0d1522] p-3" : ""}>
+                <div key={`${m.media_url}-${index}`}>
                   <img src={m.media_url} alt={item.title} className={`h-auto w-full object-cover ${template === "social" && socialMediaWidth === "card" ? "rounded-xl" : ""}`} />
                   {template === "social" && (gridTexts[index] ?? "").trim().length > 0 ? <p className="mt-2 text-sm text-white/80">{gridTexts[index]}</p> : null}
                 </div>
@@ -168,7 +180,7 @@ export default function PresentationSinglePage({ params }: { params: Promise<{ i
           {featuredPosition === "bottom" && featuredMedia.length > 0 ? (
             <div className="mt-4 space-y-4">
               {featuredMedia.map((m, index) => (
-                <div key={`${m.media_url}-${index}`} className={template === "social" && socialMediaWidth === "card" ? "rounded-2xl border border-white/10 bg-[#0d1522] p-3" : ""}>
+                <div key={`${m.media_url}-${index}`}>
                   {m.media_type === "video" ? (
                     <video src={m.media_url} autoPlay loop muted playsInline controls className={`h-auto w-full ${template === "social" && socialMediaWidth === "card" ? "rounded-xl" : ""}`} />
                   ) : (
