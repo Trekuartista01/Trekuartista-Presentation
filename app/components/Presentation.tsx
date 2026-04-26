@@ -61,7 +61,7 @@ export default function Presentation() {
   }, [presentations, query]);
 
   return (
-    <main className="min-h-screen bg-linear-to-b from-black to-[#140b0b] p-3 text-white sm:p-4 lg:p-6">
+    <main className="min-h-screen p-3 text-white sm:p-4 lg:p-6">
       <div className="mx-auto w-full">
         <section className="rounded-3xl p-0 lg:p-5 backdrop-blur-xl">
           <div className="mb-5 flex flex-col gap-3">
@@ -138,31 +138,22 @@ export default function Presentation() {
               <Link
                 href={`/presentation/${p.id}`}
                 key={p.id}
-                className="group block overflow-hidden rounded-2xl transition duration-300 hover:-translate-y-1 hover:shadow-[0_10px_25px_rgba(120,120,255,0.25)]"
+                className="group block h-full rounded-2xl transition duration-300 hover:-translate-y-1 hover:shadow-[0_10px_25px_rgba(120,120,255,0.25)]"
               >
-                <div className="relative h-56 overflow-hidden lg:h-[30vh]">
-                  {p.is_pinned ? (
-                    <span className="pointer-events-none absolute left-2 top-2 z-10 rounded-full border border-amber-300/60 bg-black/50 px-2 py-0.5 text-[10px] text-amber-200">🔑 Pinned</span>
-                  ) : null}
-                  {p.media?.[0]?.media_type === "video" ? (
-                    <video src={p.media[0].media_url} className="h-full w-full scale-110 object-cover blur-sm transition duration-500 group-hover:scale-125" muted playsInline />
-                  ) : (
-                    <img src={p.media?.[0]?.media_url ?? "/assets/logo-treku.png"} alt={p.title} className="h-full w-full scale-110 object-cover blur-[5px] transition duration-500 group-hover:scale-125" />
-                  )}
-                  <div className="absolute inset-0 bg-black/45 transition duration-300 group-hover:bg-black/25" />
-                  <div className="absolute inset-0 flex items-center justify-center opacity-0 transition duration-300 group-hover:opacity-100">
-                    <span className="rounded-full border border-white/40 bg-black/45 px-4 py-1 text-xs font-semibold text-white">
-                      {p.is_pinned ? "I bllokuar" : "Shiko Prezantimin"}
-                    </span>
+                <div className="flex h-full min-h-[200px] flex-col justify-between rounded-2xl bg-white/75 p-5 transition duration-300 group-hover:bg-white group-hover:text-white">
+                  <div className="space-y-2">
+                    {p.is_pinned ? (
+                      <span className="inline-flex rounded-full border border-amber-300/60 bg-amber-500/10 px-2 py-0.5 text-[10px] text-amber-800">🔑 Pinned</span>
+                    ) : (
+                      <span className="invisible inline-flex rounded-full border px-2 py-0.5 text-[10px]">placeholder</span>
+                    )}
+                    <p className="text-lg lg:text-xl font-semibold text-black">{p.title}</p>
+                    <p className="text-[12px] font-medium text-green-900">
+                      Publikuar më {new Date(p.created_at).toLocaleDateString("sq-AL", { year: "numeric", month: "long", day: "numeric" })}
+                    </p>
                   </div>
-                </div>
-                <div className="space-y-1 rounded-b-2xl bg-white/75 p-5 transition duration-300 group-hover:bg-white group-hover:text-white">
-                  <p className="text-lg lg:text-xl font-semibold text-black">{p.title}</p>
-                  <p className="text-[12px] font-medium text-green-900">
-                    Publikuar më {new Date(p.created_at).toLocaleDateString("sq-AL", { year: "numeric", month: "long", day: "numeric" })}
-                  </p>
                   <div className="mt-2 flex items-center justify-between">
-                    <button className="rounded-2xl border cursor-pointer text-black border-black/20 px-4 py-2 text-xs lg:text-sm font-semibold">{p.is_pinned ? "Locked" : "Shiko prezantimin"}</button>
+                    <button className="rounded-2xl border cursor-pointer border-black/20 px-4 py-2 text-xs font-semibold text-black lg:text-sm">{p.is_pinned ? "Locked" : "Shiko prezantimin"}</button>
                   </div>
                 </div>
               </Link>

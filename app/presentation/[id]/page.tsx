@@ -133,7 +133,7 @@ export default function PresentationSinglePage({ params }: { params: Promise<{ i
   const gridTexts = mediaTexts.slice(activeFeaturedCount);
 
   return (
-    <main className="min-h-screen bg-linear-to-b from-black via-[#050b14] to-[#000000] p-2 lg:p-16 text-white">
+    <main className="min-h-screen p-2 lg:p-16 text-white">
       <div className="mx-auto grid h-auto w-full grid-cols-1 gap-6">
         <div className="rounded-3xl bg-white/5 p-5 lg:p-10 backdrop-blur-xl">
           <button
