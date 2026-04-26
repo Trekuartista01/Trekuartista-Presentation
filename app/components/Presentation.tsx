@@ -121,7 +121,7 @@ export default function Presentation() {
             <span>Prezantime: {filtered.length}</span>
           </div>
 
-          <div className="mt-8 grid gap-4 sm:mt-10 sm:grid-cols-2 lg:mt-16 lg:grid-cols-4">
+          <div className="mt-8 grid gap-4 sm:mt-10 grid-cols-2 sm:grid-cols-2 lg:mt-16 lg:grid-cols-4">
             {loading
               ? Array.from({ length: 8 }).map((_, index) => (
                   <div key={`skeleton-${index}`} className="overflow-hidden rounded-2xl border border-white/10 p-3">
@@ -140,14 +140,14 @@ export default function Presentation() {
                 key={p.id}
                 className="group block h-full rounded-2xl transition duration-300 hover:-translate-y-1 hover:shadow-[0_10px_25px_rgba(120,120,255,0.25)]"
               >
-                <div className="flex h-full min-h-[200px] flex-col justify-between rounded-2xl bg-white/75 p-5 transition duration-300 group-hover:bg-white group-hover:text-white">
+                <div className="flex h-full min-h-[200px] flex-col justify-between rounded-2xl bg-white/75 px-5 py-3 transition duration-300 group-hover:bg-white group-hover:text-white">
                   <div className="space-y-2">
                     {p.is_pinned ? (
                       <span className="inline-flex rounded-full border border-amber-300/60 bg-amber-500/10 px-2 py-0.5 text-[10px] text-amber-800">🔑 Pinned</span>
                     ) : (
                       <span className="invisible inline-flex rounded-full border px-2 py-0.5 text-[10px]">placeholder</span>
                     )}
-                    <p className="text-lg lg:text-xl font-semibold text-black">{p.title}</p>
+                    <p className="text-xl lg:text-2xl font-semibold text-black">{p.title}</p>
                     <p className="text-[12px] font-medium text-green-900">
                       Publikuar më {new Date(p.created_at).toLocaleDateString("sq-AL", { year: "numeric", month: "long", day: "numeric" })}
                     </p>
