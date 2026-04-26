@@ -61,7 +61,7 @@ export default function Presentation() {
   }, [presentations, query]);
 
   return (
-    <main className="min-h-screen p-3 text-white sm:p-4 lg:p-6">
+    <main className="p-3 text-white sm:p-4 lg:p-6">
       <div className="mx-auto w-full">
         <section className="rounded-3xl p-0 lg:p-5 backdrop-blur-xl">
           <div className="mb-5 flex flex-col gap-3">
