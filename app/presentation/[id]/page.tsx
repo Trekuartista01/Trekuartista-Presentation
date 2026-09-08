@@ -2,6 +2,9 @@
 
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
+import { createZip } from "@/lib/zip";
+import { createPdfFromJpegImages } from "@/lib/pdf";
+import PresentModeOverlay from "@/app/components/PresentModeOverlay";
 
 type PresentationData = {
   id: string;
@@ -10,6 +13,31 @@ type PresentationData = {
   is_pinned?: boolean;
   media: { media_url: string; media_type: "image" | "video"; sort_order: number }[];
 };
+
+function sanitizeFilename(name: string): string {
+  return name.replace(/[\\/:*?"<>|]/g, "_").trim() || "prezantimi";
+}
+
+function filenameFromUrl(url: string): string {
+  try {
+    const clean = url.split("?")[0];
+    const last = clean.substring(clean.lastIndexOf("/") + 1);
+    return decodeURIComponent(last) || "file";
+  } catch {
+    return "file";
+  }
+}
+
+function triggerBlobDownload(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
 
 export default function PresentationSinglePage({ params }: { params: Promise<{ id: string }> }) {
   const [item, setItem] = useState<PresentationData | null>(null);
@@ -23,6 +51,11 @@ export default function PresentationSinglePage({ params }: { params: Promise<{ i
   const [customText, setCustomText] = useState("");
   const [mediaTexts, setMediaTexts] = useState<string[]>([]);
   const [isPinned, setIsPinned] = useState(false);
+
+  const [presenting, setPresenting] = useState(false);
+  const [downloadMenuOpen, setDownloadMenuOpen] = useState(false);
+  const [downloadBusy, setDownloadBusy] = useState<"pdf" | "zip" | null>(null);
+  const [toast, setToast] = useState("");
 
   useEffect(() => {
     const load = async () => {
@@ -88,6 +121,113 @@ export default function PresentationSinglePage({ params }: { params: Promise<{ i
     void load();
   }, [params]);
 
+  const showToast = (message: string) => {
+    setToast(message);
+    window.setTimeout(() => setToast(""), 2600);
+  };
+
+  const handleShare = async () => {
+    const url = window.location.href;
+    const shareTitle = item?.title ?? "Prezantimi";
+    const nav = navigator as Navigator & { share?: (data: { title?: string; url?: string }) => Promise<void> };
+    if (nav.share) {
+      try {
+        await nav.share({ title: shareTitle, url });
+        return;
+      } catch {
+        // user cancelled the native share sheet — fall back to copying the link
+      }
+    }
+    try {
+      await navigator.clipboard.writeText(url);
+      showToast("Lidhja u kopjua në clipboard!");
+    } catch {
+      window.prompt("Kopjo lidhjen e prezantimit:", url);
+    }
+  };
+
+  const handleDownloadOriginals = async () => {
+    if (!item) return;
+    const mediaList = item.media ?? [];
+    if (mediaList.length === 0) {
+      showToast("Ky prezantim s'ka asnjë file.");
+      setDownloadMenuOpen(false);
+      return;
+    }
+    setDownloadBusy("zip");
+    setDownloadMenuOpen(false);
+    try {
+      if (mediaList.length === 1) {
+        const res = await fetch(mediaList[0].media_url);
+        if (!res.ok) throw new Error("fetch failed");
+        const blob = await res.blob();
+        triggerBlobDownload(blob, filenameFromUrl(mediaList[0].media_url));
+        return;
+      }
+      const used = new Set<string>();
+      const files: { name: string; data: Uint8Array }[] = [];
+      for (const m of mediaList) {
+        const res = await fetch(m.media_url);
+        if (!res.ok) throw new Error("fetch failed");
+        const blob = await res.blob();
+        const buf = new Uint8Array(await blob.arrayBuffer());
+        let name = filenameFromUrl(m.media_url);
+        if (used.has(name)) {
+          const dot = name.lastIndexOf(".");
+          const base = dot >= 0 ? name.slice(0, dot) : name;
+          const ext = dot >= 0 ? name.slice(dot) : "";
+          name = `${base}-${used.size}${ext}`;
+        }
+        used.add(name);
+        files.push({ name, data: buf });
+      }
+      const zipBlob = createZip(files);
+      triggerBlobDownload(zipBlob, `${sanitizeFilename(item.title)}.zip`);
+    } catch {
+      showToast("Shkarkimi dështoi. Provo përsëri.");
+    } finally {
+      setDownloadBusy(null);
+    }
+  };
+
+  const handleDownloadPdf = async () => {
+    if (!item) return;
+    const images = (item.media ?? []).filter((m) => m.media_type === "image");
+    if (images.length === 0) {
+      showToast("Ky prezantim s'ka imazhe për ta bërë PDF.");
+      setDownloadMenuOpen(false);
+      return;
+    }
+    setDownloadBusy("pdf");
+    setDownloadMenuOpen(false);
+    try {
+      const converted: { bytes: Uint8Array; widthPx: number; heightPx: number }[] = [];
+      for (const m of images) {
+        const res = await fetch(m.media_url);
+        if (!res.ok) throw new Error("fetch failed");
+        const blob = await res.blob();
+        const bitmap = await createImageBitmap(blob);
+        const canvas = document.createElement("canvas");
+        canvas.width = bitmap.width;
+        canvas.height = bitmap.height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) continue;
+        ctx.drawImage(bitmap, 0, 0);
+        const jpegBlob: Blob = await new Promise((resolve, reject) =>
+          canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("toBlob failed"))), "image/jpeg", 0.9),
+        );
+        const bytes = new Uint8Array(await jpegBlob.arrayBuffer());
+        converted.push({ bytes, widthPx: canvas.width, heightPx: canvas.height });
+      }
+      const pdfBlob = await createPdfFromJpegImages(converted);
+      triggerBlobDownload(pdfBlob, `${sanitizeFilename(item.title)}.pdf`);
+    } catch {
+      showToast("Krijimi i PDF dështoi. Provo përsëri.");
+    } finally {
+      setDownloadBusy(null);
+    }
+  };
+
   if (!loaded) {
     return (
       <main className="p-6 lg:p-16 text-white">
@@ -136,14 +276,63 @@ export default function PresentationSinglePage({ params }: { params: Promise<{ i
     <main className="p-2 lg:p-16 text-white">
       <div className="mx-auto grid h-auto w-full grid-cols-1 gap-6">
         <div className="rounded-3xl bg-white/5 p-5 lg:p-10 backdrop-blur-xl">
-          <button
-            type="button"
-            onClick={() => window.history.back()}
-            className="mb-4 inline-flex h-10 w-10 cursor-pointer items-center justify-center rounded-xl border border-white/20 bg-white/10 text-base font-semibold text-white transition hover:bg-white/20"
-            aria-label="Kthehu"
-          >
-            ←
-          </button>
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <button
+              type="button"
+              onClick={() => window.history.back()}
+              className="inline-flex h-10 w-10 cursor-pointer items-center justify-center rounded-xl border border-white/20 bg-white/10 text-base font-semibold text-white transition hover:bg-white/20"
+              aria-label="Kthehu"
+            >
+              ←
+            </button>
+
+            <div className="flex flex-wrap items-center gap-2">
+              {media.length > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => setPresenting(true)}
+                  className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-white/20 bg-white/10 px-3 py-2 text-xs font-semibold text-white transition hover:bg-white/20 sm:text-sm"
+                >
+                  🖥️ Paraqit si prezantim
+                </button>
+              ) : null}
+              <button
+                type="button"
+                onClick={handleShare}
+                className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-white/20 bg-white/10 px-3 py-2 text-xs font-semibold text-white transition hover:bg-white/20 sm:text-sm"
+              >
+                🔗 Shpërndaj
+              </button>
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setDownloadMenuOpen((v) => !v)}
+                  disabled={downloadBusy !== null}
+                  className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-white/20 bg-white/10 px-3 py-2 text-xs font-semibold text-white transition hover:bg-white/20 disabled:cursor-wait disabled:opacity-60 sm:text-sm"
+                >
+                  {downloadBusy ? "Duke përgatitur…" : "⬇️ Shkarko"}
+                </button>
+                {downloadMenuOpen ? (
+                  <div className="absolute right-0 z-20 mt-2 w-60 overflow-hidden rounded-xl border border-white/10 bg-[#0b0f1a] text-left shadow-2xl">
+                    <button
+                      type="button"
+                      onClick={handleDownloadPdf}
+                      className="block w-full cursor-pointer px-4 py-3 text-left text-sm text-white transition hover:bg-white/10"
+                    >
+                      Si PDF
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleDownloadOriginals}
+                      className="block w-full cursor-pointer px-4 py-3 text-left text-sm text-white transition hover:bg-white/10"
+                    >
+                      Filet origjinale {media.length > 1 ? "(ZIP)" : ""}
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          </div>
           <div className="mb-5">
             <h1 className="text-3xl lg:text-5xl font-bold mb-6 lg:mb-10">{item.title}</h1>
             {isPinned ? <p className="mt-2 inline-flex rounded-full border border-amber-300/60 bg-amber-500/10 px-3 py-1 text-xs text-amber-200">🔑 Pinned</p> : null}
@@ -215,6 +404,12 @@ export default function PresentationSinglePage({ params }: { params: Promise<{ i
           )}
         </div>
       </div>
+
+      {presenting ? <PresentModeOverlay media={media} title={item.title} onClose={() => setPresenting(false)} /> : null}
+
+      {toast ? (
+        <div className="fixed bottom-6 left-1/2 z-[1000] -translate-x-1/2 rounded-full bg-white px-4 py-2 text-sm font-medium text-black shadow-lg">{toast}</div>
+      ) : null}
     </main>
   );
 }
