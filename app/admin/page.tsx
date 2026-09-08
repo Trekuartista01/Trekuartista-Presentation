@@ -10,6 +10,7 @@ type PresentationData = {
   description: string;
   published_at: string | null;
   is_pinned?: boolean;
+  access_password_hash?: string | null;
   media: { id: string; media_url: string; media_type: "image" | "video"; sort_order?: number; media_size_bytes?: number | null }[];
 };
 
@@ -28,13 +29,11 @@ function moveItem<T>(arr: T[], from: number, to: number): T[] {
 }
 
 function FilePreview({ file }: { file: File }) {
-  const [url, setUrl] = useState("");
+  const [url] = useState(() => URL.createObjectURL(file));
 
   useEffect(() => {
-    const nextUrl = URL.createObjectURL(file);
-    setUrl(nextUrl);
-    return () => URL.revokeObjectURL(nextUrl);
-  }, [file]);
+    return () => URL.revokeObjectURL(url);
+  }, [url]);
 
   if (!url) return <div className="h-14 w-14 rounded-lg bg-white/10" />;
   if (file.type.startsWith("video/")) return <video src={url} className="h-14 w-14 rounded-lg object-cover" muted playsInline />;
@@ -45,6 +44,14 @@ function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+async function sha256Hex(text: string): Promise<string> {
+  const bytes = new TextEncoder().encode(text);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 async function compressImageToTarget(file: File, targetBytes: number): Promise<File> {
@@ -121,6 +128,9 @@ export default function AdminPage() {
   const [editForm, setEditForm] = useState({ title: "", description: "", published_at: "" });
   const [editMedia, setEditMedia] = useState<PresentationData["media"]>([]);
   const [editRemovedMediaIds, setEditRemovedMediaIds] = useState<string[]>([]);
+  const [presentationPassword, setPresentationPassword] = useState("");
+  const [editPassword, setEditPassword] = useState("");
+  const [editRemovePassword, setEditRemovePassword] = useState(false);
   const [draggingEditIndex, setDraggingEditIndex] = useState<number | null>(null);
   const [savingEdit, setSavingEdit] = useState(false);
   const [addingEditFiles, setAddingEditFiles] = useState(false);
@@ -148,56 +158,27 @@ export default function AdminPage() {
   };
 
   const refresh = async () => {
-    const withPinned = await supabase
-      .from("presentations")
-      .select("id,title,description,published_at,is_pinned,media:presentation_media(id,media_url,media_type,sort_order,media_size_bytes)")
-      .order("created_at", { ascending: false });
-    if (!withPinned.error && withPinned.data) {
-      setItems(withPinned.data as PresentationData[]);
-      return;
-    }
-    if (withPinned.error?.message?.toLowerCase().includes("media_size_bytes")) {
-      const withPinnedNoSize = await supabase
-        .from("presentations")
-        .select("id,title,description,published_at,is_pinned,media:presentation_media(id,media_url,media_type,sort_order)")
-        .order("created_at", { ascending: false });
-      if (!withPinnedNoSize.error && withPinnedNoSize.data) {
-        setItems((withPinnedNoSize.data as PresentationData[]).map((x) => ({ ...x, media: (x.media ?? []).map((m) => ({ ...m, media_size_bytes: null })) })));
+    try {
+      const res = await fetch("/api/admin/presentations", {
+        headers: { "x-admin-nickname": ADMIN_NICKNAME, "x-admin-password": ADMIN_PASSWORD },
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        setStatus(json?.error ?? "Gabim gjatë ngarkimit.");
         return;
       }
+      setItems((json.items ?? []) as PresentationData[]);
+    } catch {
+      setStatus("Gabim gjatë ngarkimit. Kontrollo lidhjen ose SUPABASE_SERVICE_ROLE_KEY.");
     }
-    if (!withPinned.error || !withPinned.error.message.toLowerCase().includes("is_pinned")) {
-      setStatus(withPinned.error?.message ?? "Gabim gjatë ngarkimit.");
-      return;
-    }
-    const fallback = await supabase
-      .from("presentations")
-      .select("id,title,description,published_at,media:presentation_media(id,media_url,media_type,sort_order,media_size_bytes)")
-      .order("created_at", { ascending: false });
-    if (fallback.error?.message?.toLowerCase().includes("media_size_bytes")) {
-      const fallbackNoSize = await supabase
-        .from("presentations")
-        .select("id,title,description,published_at,media:presentation_media(id,media_url,media_type,sort_order)")
-        .order("created_at", { ascending: false });
-      if (fallbackNoSize.error) {
-        setStatus(fallbackNoSize.error.message);
-        return;
-      }
-      if (fallbackNoSize.data) {
-        setItems((fallbackNoSize.data as PresentationData[]).map((x) => ({ ...x, is_pinned: false, media: (x.media ?? []).map((m) => ({ ...m, media_size_bytes: null })) })));
-        return;
-      }
-    }
-    if (fallback.error) {
-      setStatus(fallback.error.message);
-      return;
-    }
-    if (fallback.data) setItems((fallback.data as PresentationData[]).map((x) => ({ ...x, is_pinned: false })));
   };
 
   useEffect(() => {
     const stored = localStorage.getItem("treku_admin_user");
     if (stored) {
+      // Hydrating from localStorage after mount is intentional here (SSR has no
+      // access to localStorage), so this can't be done via a lazy state initializer.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setAdminUser(stored);
     }
 
@@ -298,6 +279,8 @@ export default function AdminPage() {
     let inserted: { id: string } | null = null;
     let insertError: { message: string } | null = null;
 
+    const passwordHash = presentationPassword.trim() ? await sha256Hex(presentationPassword.trim()) : null;
+
     const insertWithPinned = await supabase
       .from("presentations")
       .insert({
@@ -305,6 +288,7 @@ export default function AdminPage() {
         description: form.description,
         published_at: form.published_at || null,
         is_pinned: false,
+        access_password_hash: passwordHash,
       })
       .select("id")
       .single();
@@ -318,11 +302,18 @@ export default function AdminPage() {
           title: form.title,
           description: form.description,
           published_at: form.published_at || null,
+          access_password_hash: passwordHash,
         })
         .select("id")
         .single();
       inserted = fallbackInsert.data;
       insertError = fallbackInsert.error ? { message: fallbackInsert.error.message } : null;
+    }
+
+    if (insertError && insertError.message.toLowerCase().includes("access_password_hash")) {
+      setSaving(false);
+      setStatus("Kolona 'access_password_hash' nuk ekziston ende në databazë. Shto kolonën në Supabase (shih udhëzimet) dhe provo përsëri.");
+      return;
     }
 
     if (insertError || !inserted) {
@@ -372,6 +363,7 @@ export default function AdminPage() {
       setMediaTexts([]);
       setFeaturedFiles([]);
       setFeaturedMediaTexts([]);
+      setPresentationPassword("");
       setStatus(`U ruajt me sukses. U shtuan ${count} file.`);
       setShowModal(false);
       setModalStep(1);
@@ -426,23 +418,38 @@ export default function AdminPage() {
     });
     setEditMedia([...(item.media ?? [])].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0)));
     setEditRemovedMediaIds([]);
+    setEditPassword("");
+    setEditRemovePassword(false);
   };
 
   const saveEdit = async (e: FormEvent) => {
     e.preventDefault();
     if (!editingItem) return;
     setSavingEdit(true);
+
+    const passwordUpdate: { access_password_hash?: string | null } = {};
+    if (editRemovePassword) {
+      passwordUpdate.access_password_hash = null;
+    } else if (editPassword.trim()) {
+      passwordUpdate.access_password_hash = await sha256Hex(editPassword.trim());
+    }
+
     const { error } = await supabase
       .from("presentations")
       .update({
         title: editForm.title,
         description: editForm.description,
         published_at: editForm.published_at || null,
+        ...passwordUpdate,
       })
       .eq("id", editingItem.id);
     if (error) {
       setSavingEdit(false);
-      setStatus(error.message);
+      setStatus(
+        error.message.toLowerCase().includes("access_password_hash")
+          ? "Kolona 'access_password_hash' nuk ekziston ende në databazë. Shto kolonën në Supabase (shih udhëzimet) dhe provo përsëri."
+          : error.message,
+      );
       return;
     }
 
@@ -469,6 +476,8 @@ export default function AdminPage() {
     setEditingItem(null);
     setEditMedia([]);
     setEditRemovedMediaIds([]);
+    setEditPassword("");
+    setEditRemovePassword(false);
     setSavingEdit(false);
     await refresh();
   };
@@ -599,7 +608,14 @@ export default function AdminPage() {
                     <img src={item.media?.[0]?.media_url ?? "/assets/logo-treku.png"} alt={item.title} className="h-14 w-14 rounded-lg object-cover" />
                   )}
                   <div className="min-w-0">
-                    <p className="truncate font-semibold">{item.title}</p>
+                    <p className="flex items-center gap-2 truncate font-semibold">
+                      {item.title}
+                      {item.access_password_hash ? (
+                        <span className="inline-flex shrink-0 rounded-full border border-emerald-300/50 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-normal text-emerald-200">
+                          🔒 Me fjalëkalim
+                        </span>
+                      ) : null}
+                    </p>
                     <p className="truncate text-sm text-white/60">
                       {item.media?.length ?? 0} media · {item.published_at ?? "pa datë"} ·{" "}
                       {(item.media ?? []).some((m) => typeof m.media_size_bytes === "number")
@@ -695,6 +711,20 @@ export default function AdminPage() {
                   <textarea className="h-24 w-full rounded-xl border border-white/10 bg-white/10 px-3 py-2 outline-none" placeholder="Përshkrimi (opsionale)" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
                   <input className="w-full rounded-xl border border-white/10 bg-white/10 px-3 py-2 outline-none" type="date" value={form.published_at} onChange={(e) => setForm({ ...form, published_at: e.target.value })} />
                 </div>
+              </div>
+
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
+                <p className="mb-2 text-sm font-semibold text-white">Fjalëkalimi (opsionale)</p>
+                <input
+                  className="w-full rounded-xl border border-white/10 bg-white/10 px-3 py-2 outline-none"
+                  type="text"
+                  placeholder="Lëre bosh për prezantim publik"
+                  value={presentationPassword}
+                  onChange={(e) => setPresentationPassword(e.target.value)}
+                />
+                <p className="mt-2 text-xs text-white/50">
+                  Nëse vendos fjalëkalim, prezantimi nuk shfaqet në listën publike dhe hapet vetëm nga dikush që e ka fjalëkalimin.
+                </p>
               </div>
 
               <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
@@ -1031,6 +1061,33 @@ export default function AdminPage() {
                 value={editForm.published_at}
                 onChange={(e) => setEditForm((prev) => ({ ...prev, published_at: e.target.value }))}
               />
+              <div className="space-y-2 rounded-2xl border border-white/10 bg-white/5 p-3">
+                <p className="text-sm font-semibold text-white">Fjalëkalimi i prezantimit</p>
+                <p className="text-xs text-white/60">
+                  {editingItem?.access_password_hash ? "🔒 Ky prezantim ka fjalëkalim aktualisht." : "Ky prezantim është publik (pa fjalëkalim)."}
+                </p>
+                <input
+                  className="w-full rounded-xl border border-white/10 bg-white/10 px-3 py-2 outline-none disabled:opacity-40"
+                  type="text"
+                  placeholder={editingItem?.access_password_hash ? "Fjalëkalim i ri (lëre bosh për ta lënë siç është)" : "Vendos fjalëkalim (opsionale)"}
+                  value={editPassword}
+                  disabled={editRemovePassword}
+                  onChange={(e) => setEditPassword(e.target.value)}
+                />
+                {editingItem?.access_password_hash ? (
+                  <label className="flex items-center gap-2 text-xs text-white/70">
+                    <input
+                      type="checkbox"
+                      checked={editRemovePassword}
+                      onChange={(e) => {
+                        setEditRemovePassword(e.target.checked);
+                        if (e.target.checked) setEditPassword("");
+                      }}
+                    />
+                    Hiq fjalëkalimin (bëje publik)
+                  </label>
+                ) : null}
+              </div>
               <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
                 <div className="mb-2 flex items-center justify-between">
                   <p className="text-sm font-semibold text-white">Media ekzistuese</p>
