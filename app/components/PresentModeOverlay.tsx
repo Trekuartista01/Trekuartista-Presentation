@@ -85,7 +85,7 @@ export default function PresentModeOverlay({
 
       <div className="relative flex h-full w-full items-center justify-center px-4 py-4">
         {current.media_type === "video" ? (
-          <video key={current.media_url} src={current.media_url} controls autoPlay className="max-h-full max-w-full object-contain" />
+          <video key={current.media_url} src={current.media_url} controls autoPlay loop muted playsInline className="max-h-full max-w-full object-contain" />
         ) : (
           <img key={current.media_url} src={current.media_url} alt={title} className="max-h-full max-w-full object-contain" />
         )}
