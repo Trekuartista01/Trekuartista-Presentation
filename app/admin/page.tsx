@@ -1,8 +1,20 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { supabase } from "@/lib/supabase";
+import {
+  RenderedPage,
+  SCROLL_IMAGE_TYPES,
+  SCROLL_VIDEO_TYPES,
+  ScrollMeta,
+  captureVideoPoster,
+  loadScrollMeta,
+  publishScrollMeta,
+  readImage,
+  renderPdfToImages,
+  saveScrollMeta,
+} from "@/lib/scroll";
 
 type PresentationData = {
   id: string;
@@ -89,11 +101,29 @@ async function compressImageToTarget(file: File, targetBytes: number): Promise<F
   }
 }
 
+type ScrollSource = {
+  file: File;
+  kind: "image" | "pdf";
+  // For a tall image this is the image itself; for a PDF the rendered pages.
+  pages: RenderedPage[];
+  autoColor: string;
+};
+
+// position = how many sections (PDF pages / the image) come before the video: 0 = start, pages.length = end.
+type ScrollVideoDraft = { file: File; position: number; poster: File | null; width: number; height: number };
+
+function scrollPositionLabel(position: number, sectionCount: number, kind: "image" | "pdf"): string {
+  if (kind === "image") return position === 0 ? "Para imazhit" : "Pas imazhit";
+  if (position === 0) return "Në fillim";
+  if (position >= sectionCount) return `Në fund (pas faqes ${sectionCount})`;
+  return `Pas faqes ${position}`;
+}
+
 const initialForm = {
   title: "",
   description: "",
   published_at: "",
-  template: "classic" as "classic" | "social",
+  template: "classic" as "classic" | "social" | "scroll",
   layoutCols: 1 as 1 | 3,
   socialMediaWidth: "card" as "card" | "full",
   featuredFullWidth: false,
@@ -126,6 +156,11 @@ export default function AdminPage() {
   const [credentials, setCredentials] = useState({ nickname: "", password: "" });
   const [draggingGridIndex, setDraggingGridIndex] = useState<number | null>(null);
   const [draggingFeaturedIndex, setDraggingFeaturedIndex] = useState<number | null>(null);
+  const [scrollSource, setScrollSource] = useState<ScrollSource | null>(null);
+  const [scrollConverting, setScrollConverting] = useState("");
+  const [scrollVideos, setScrollVideos] = useState<ScrollVideoDraft[]>([]);
+  const [scrollBgOverride, setScrollBgOverride] = useState<string | null>(null);
+  const scrollSourceToken = useRef(0);
 
   const addFilesToQueue = async (incoming: FileList | null) => {
     if (!incoming || incoming.length === 0) return;
@@ -357,7 +392,8 @@ export default function AdminPage() {
             : mediaTexts.map((t) => t.trim())
           : [];
       designsMap[inserted.id] = {
-        template: form.template,
+        // Scroll submits through onSubmitScroll, so only the two slide formats reach here.
+        template: form.template as "classic" | "social",
         layoutCols: form.layoutCols,
         socialMediaWidth: form.socialMediaWidth,
         featuredFullWidth: !!form.featuredFullWidth,
@@ -466,7 +502,15 @@ export default function AdminPage() {
       }
     }
 
-    setStatus("Prezantimi u përditësua me sukses.");
+    // Re-publishes Scroll settings kept only in this browser (presentations made before they were shared).
+    const localScrollMeta = loadScrollMeta(editingItem.id);
+    const scrollPublishFailed = !!localScrollMeta && !(await publishScrollMeta(editingItem.id, localScrollMeta));
+
+    setStatus(
+      scrollPublishFailed
+        ? "Prezantimi u përditësua, por cilësimet Scroll nuk u ruajtën në server."
+        : "Prezantimi u përditësua me sukses.",
+    );
     setEditingItem(null);
     setEditMedia([]);
     setEditRemovedMediaIds([]);
@@ -514,6 +558,184 @@ export default function AdminPage() {
       setStatus(error instanceof Error ? error.message : "Gabim gjatë upload.");
     } finally {
       setAddingEditFiles(false);
+    }
+  };
+
+  const scrollSectionCount = scrollSource?.pages.length ?? 0;
+
+  const pickScrollSource = async (file: File | undefined) => {
+    if (!file) return;
+    const isPdf = file.type === "application/pdf" || /\.pdf$/i.test(file.name);
+    if (!isPdf && !SCROLL_IMAGE_TYPES.includes(file.type)) {
+      setStatus(`Format i pambështetur: ${file.name}. Lejohen PNG, JPG, WebP ose PDF.`);
+      return;
+    }
+    if (file.size > MAX_FILE_SIZE_BYTES) {
+      setStatus(`File shumë i madh: ${file.name}. Maksimumi ${MAX_FILE_SIZE_MB}MB.`);
+      return;
+    }
+    const token = ++scrollSourceToken.current;
+    const hadSource = !!scrollSource;
+    setScrollSource(null);
+    setScrollBgOverride(null);
+    setStatus("");
+    try {
+      let next: ScrollSource;
+      if (isPdf) {
+        setScrollConverting("Duke lexuar PDF…");
+        const { pages, color } = await renderPdfToImages(file, (done, total) => {
+          if (token === scrollSourceToken.current) setScrollConverting(`Duke konvertuar faqen ${done}/${total}…`);
+        });
+        if (pages.length === 0) throw new Error("PDF nuk ka faqe.");
+        next = { file, kind: "pdf", pages, autoColor: color };
+      } else {
+        setScrollConverting("Duke lexuar imazhin…");
+        const { width, height, color } = await readImage(file);
+        next = { file, kind: "image", pages: [{ file, width, height }], autoColor: color };
+      }
+      if (token !== scrollSourceToken.current) return;
+      setScrollSource(next);
+      // Videos added before any content default to the end.
+      setScrollVideos((prev) => prev.map((v) => ({ ...v, position: hadSource ? Math.min(v.position, next.pages.length) : next.pages.length })));
+    } catch (error) {
+      if (token !== scrollSourceToken.current) return;
+      setStatus(error instanceof Error ? `Konvertimi dështoi: ${error.message}` : "Konvertimi dështoi.");
+    } finally {
+      if (token === scrollSourceToken.current) setScrollConverting("");
+    }
+  };
+
+  const addScrollVideos = async (incoming: FileList | null) => {
+    if (!incoming || incoming.length === 0) return;
+    const list = Array.from(incoming);
+    const wrongType = list.find((f) => !SCROLL_VIDEO_TYPES.includes(f.type));
+    if (wrongType) {
+      setStatus(`Format i pambështetur: ${wrongType.name}. Lejohen vetëm MP4 ose WebM.`);
+      return;
+    }
+    const tooLarge = list.find((f) => f.size > MAX_FILE_SIZE_BYTES);
+    if (tooLarge) {
+      setStatus(`File shumë i madh: ${tooLarge.name}. Maksimumi ${MAX_FILE_SIZE_MB}MB.`);
+      return;
+    }
+    const drafts = await Promise.all(
+      list.map(async (file) => {
+        const { poster, width, height } = await captureVideoPoster(file);
+        return { file, position: scrollSectionCount, poster, width, height };
+      }),
+    );
+    setScrollVideos((prev) => [...prev, ...drafts]);
+  };
+
+  const uploadScrollExtra = async (presentationId: string, file: File, label: string): Promise<string | null> => {
+    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const path = `${presentationId}/${Date.now()}-${label}-${safeName}`;
+    const { error } = await supabase.storage.from("presentations").upload(path, file, { upsert: false });
+    if (error) return null;
+    return supabase.storage.from("presentations").getPublicUrl(path).data.publicUrl;
+  };
+
+  const onSubmitScroll = async (e: FormEvent) => {
+    e.preventDefault();
+    if (scrollConverting) {
+      setStatus("Prit sa të përfundojë konvertimi.");
+      return;
+    }
+    if (!scrollSource) {
+      setStatus("Zgjidh një imazh të gjatë ose një PDF.");
+      return;
+    }
+    setSaving(true);
+
+    // Interleave videos with the sections at their chosen positions.
+    const ordered: File[] = [];
+    const sizes: { w: number; h: number }[] = [];
+    const posterFor: (File | null)[] = [];
+    for (let slot = 0; slot <= scrollSource.pages.length; slot += 1) {
+      for (const v of scrollVideos.filter((x) => x.position === slot)) {
+        ordered.push(v.file);
+        sizes.push({ w: v.width, h: v.height });
+        posterFor.push(v.poster);
+      }
+      const page = scrollSource.pages[slot];
+      if (page) {
+        ordered.push(page.file);
+        sizes.push({ w: page.width, h: page.height });
+        posterFor.push(null);
+      }
+    }
+
+    let inserted: { id: string } | null = null;
+    let insertError: { message: string } | null = null;
+    const insertWithPinned = await supabase
+      .from("presentations")
+      .insert({ title: form.title, description: form.description, published_at: form.published_at || null, is_pinned: false })
+      .select("id")
+      .single();
+    inserted = insertWithPinned.data;
+    insertError = insertWithPinned.error ? { message: insertWithPinned.error.message } : null;
+    if (insertError && insertError.message.toLowerCase().includes("is_pinned")) {
+      const fallbackInsert = await supabase
+        .from("presentations")
+        .insert({ title: form.title, description: form.description, published_at: form.published_at || null })
+        .select("id")
+        .single();
+      inserted = fallbackInsert.data;
+      insertError = fallbackInsert.error ? { message: fallbackInsert.error.message } : null;
+    }
+    if (insertError || !inserted) {
+      setSaving(false);
+      setStatus(insertError?.message ?? "Gabim gjatë ruajtjes.");
+      return;
+    }
+
+    try {
+      setStatus(`Duke ngarkuar ${ordered.length} file…`);
+      const count = await uploadMediaToPresentation(inserted.id, ordered, 0);
+      const { data: rows, error: rowsError } = await supabase
+        .from("presentation_media")
+        .select("media_url,sort_order")
+        .eq("presentation_id", inserted.id)
+        .order("sort_order", { ascending: true });
+      if (rowsError || !rows) throw new Error(rowsError?.message ?? "Media nuk u lexua pas ngarkimit.");
+
+      const meta: ScrollMeta = { source: scrollSource.kind, bgColor: scrollBgOverride ?? scrollSource.autoColor, sizes: {}, posters: {} };
+      const warnings: string[] = [];
+      for (let i = 0; i < rows.length && i < ordered.length; i += 1) {
+        const url = rows[i].media_url as string;
+        if (sizes[i].w && sizes[i].h) meta.sizes[url] = sizes[i];
+        const poster = posterFor[i];
+        if (poster) {
+          const posterUrl = await uploadScrollExtra(inserted.id, poster, "poster");
+          if (posterUrl) meta.posters[url] = posterUrl;
+        }
+      }
+      if (scrollSource.kind === "pdf") {
+        const originalUrl = await uploadScrollExtra(inserted.id, scrollSource.file, "original");
+        if (originalUrl) {
+          meta.originalUrl = originalUrl;
+          meta.originalName = scrollSource.file.name;
+        } else {
+          warnings.push("PDF origjinal nuk u ngarkua (kontrollo tipet e lejuara në bucket).");
+        }
+      }
+      saveScrollMeta(inserted.id, meta);
+      if (!(await publishScrollMeta(inserted.id, meta))) {
+        warnings.push("Cilësimet Scroll nuk u ruajtën në server — të tjerët do ta shohin si prezantim normal.");
+      }
+
+      setSaving(false);
+      if (!keepValues) setForm(initialForm);
+      setScrollSource(null);
+      setScrollVideos([]);
+      setScrollBgOverride(null);
+      setStatus(`U ruajt me sukses. U shtuan ${count} file.${warnings.length ? ` ${warnings.join(" ")}` : ""}`);
+      setShowModal(false);
+      setModalStep(1);
+      await refresh();
+    } catch (error) {
+      setSaving(false);
+      setStatus(error instanceof Error ? error.message : "Gabim gjatë upload.");
     }
   };
 
@@ -656,7 +878,7 @@ export default function AdminPage() {
             {modalStep === 1 ? (
               <div className="space-y-4">
                 <p className="text-sm text-white/70">Zgjidh fillimisht template-in, pastaj vazhdo te forma e shtimit.</p>
-                <div className="grid gap-3 sm:grid-cols-2">
+                <div className="grid gap-3 sm:grid-cols-3">
                   <button
                     type="button"
                     onClick={() => {
@@ -679,12 +901,23 @@ export default function AdminPage() {
                     <p className="font-semibold">Social Media Template</p>
                     <p className="text-xs text-white/70">Kartela sociale me tekst për media.</p>
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setForm((prev) => ({ ...prev, template: "scroll" }));
+                      setModalStep(2);
+                    }}
+                    className={`rounded-xl border px-4 py-3 text-left ${form.template === "scroll" ? "border-indigo-400 bg-indigo-500/20" : "border-white/15 bg-white/5"}`}
+                  >
+                    <p className="font-semibold">Scroll</p>
+                    <p className="text-xs text-white/70">Prezantim vertikal nga një imazh i gjatë ose PDF, me video.</p>
+                  </button>
                 </div>
               </div>
             ) : (
-            <form onSubmit={onSubmit} className="space-y-4">
+            <form onSubmit={form.template === "scroll" ? onSubmitScroll : onSubmit} className="space-y-4">
               <div className="flex items-center justify-between">
-                <p className="text-sm text-white/70">Template: <span className="font-semibold text-white">{form.template === "classic" ? "PDF template" : "Social Media Template"}</span></p>
+                <p className="text-sm text-white/70">Template: <span className="font-semibold text-white">{form.template === "classic" ? "PDF template" : form.template === "scroll" ? "Scroll" : "Social Media Template"}</span></p>
                 <button type="button" onClick={() => setModalStep(1)} className="rounded-lg border border-white/20 px-3 py-1 text-xs">
                   Ndrysho template
                 </button>
@@ -698,6 +931,8 @@ export default function AdminPage() {
                 </div>
               </div>
 
+              {form.template !== "scroll" && (
+              <>
               <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
                 <p className="mb-2 text-sm font-semibold text-white">Layout</p>
                 <div className="flex flex-wrap gap-2">
@@ -797,6 +1032,8 @@ export default function AdminPage() {
                   />
                 )}
               </div>
+              </>
+              )}
 
               {form.template === "social" && (files.length > 0 || (featuredFiles.length > 0 && form.layoutCols === 3 && form.featuredFullWidth)) && (
                 <div className="rounded-xl border border-white/10 bg-white/5 p-3">
@@ -846,6 +1083,141 @@ export default function AdminPage() {
                   </div>
                 </div>
               )}
+              {form.template === "scroll" ? (
+                <div className="space-y-3">
+                  <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
+                    <p className="mb-2 text-sm font-semibold text-white">Përmbajtja</p>
+                    <label className="block cursor-pointer rounded-2xl border border-dashed border-indigo-300/60 bg-indigo-500/10 p-4 text-center transition hover:bg-indigo-500/20">
+                      <p className="text-sm font-semibold text-indigo-100">{scrollSource ? "Zëvendëso file-in" : "Zgjidh një imazh të gjatë ose një PDF"}</p>
+                      <p className="mt-1 text-xs text-white/70">PNG, JPG, WebP ose PDF me shumë faqe. Faqet e PDF konvertohen në imazhe me rezolucion të lartë.</p>
+                      <input
+                        className="hidden"
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp,application/pdf"
+                        disabled={!!scrollConverting}
+                        onChange={(e) => {
+                          void pickScrollSource(e.target.files?.[0]);
+                          e.currentTarget.value = "";
+                        }}
+                      />
+                    </label>
+                    {scrollConverting ? <p className="mt-2 text-xs text-indigo-200">{scrollConverting}</p> : null}
+                    {scrollSource ? (
+                      <div className="mt-2 flex items-center gap-2 rounded-lg border border-white/10 bg-white/5 p-2 text-xs text-white/75">
+                        <FilePreview key={`${scrollSource.file.name}-${scrollSource.file.lastModified}`} file={scrollSource.pages[0].file} />
+                        <div className="min-w-0">
+                          <p className="truncate">
+                            {scrollSource.file.name} ({formatFileSize(scrollSource.file.size)})
+                          </p>
+                          <p className="text-white/55">
+                            {scrollSource.kind === "pdf" ? `${scrollSource.pages.length} faqe` : `${scrollSource.pages[0].width} × ${scrollSource.pages[0].height}px`}
+                          </p>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+
+                  {scrollSource ? (
+                    <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
+                      <p className="mb-2 text-sm font-semibold text-white">Ngjyra e sfondit</p>
+                      <div className="flex flex-wrap items-center gap-2 text-sm">
+                        <input
+                          type="color"
+                          value={scrollBgOverride ?? scrollSource.autoColor}
+                          onChange={(e) => setScrollBgOverride(e.target.value)}
+                          className="h-9 w-12 cursor-pointer rounded-lg border border-white/20 bg-transparent"
+                          aria-label="Ngjyra e sfondit"
+                        />
+                        <span className="font-mono text-xs text-white/75">{scrollBgOverride ?? scrollSource.autoColor}</span>
+                        {scrollBgOverride ? (
+                          <button type="button" onClick={() => setScrollBgOverride(null)} className="rounded-lg bg-white/10 px-3 py-1 text-xs">
+                            Auto ({scrollSource.autoColor})
+                          </button>
+                        ) : (
+                          <span className="text-xs text-white/55">Auto, nga skajet e imazhit</span>
+                        )}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
+                    <p className="mb-2 text-sm font-semibold text-white">Video (opsionale)</p>
+                    <label className="block cursor-pointer rounded-xl border border-dashed border-fuchsia-300/60 bg-fuchsia-500/10 p-3 text-center transition hover:bg-fuchsia-500/20">
+                      <p className="text-sm font-semibold text-fuchsia-100">Shto video MP4 / WebM</p>
+                      <p className="mt-1 text-xs text-white/70">Luhen pa zë dhe në loop. Zgjidh pozicionin për secilën.</p>
+                      <input
+                        className="hidden"
+                        type="file"
+                        accept="video/mp4,video/webm"
+                        multiple
+                        onChange={(e) => {
+                          void addScrollVideos(e.target.files);
+                          e.currentTarget.value = "";
+                        }}
+                      />
+                    </label>
+                    {scrollVideos.length > 0 ? (
+                      <div className="mt-2 space-y-2 text-xs text-white/75">
+                        {scrollVideos.map((v, idx) => (
+                          <div key={`${v.file.name}-${v.file.lastModified}-${idx}`} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-white/10 bg-white/5 p-2">
+                            <div className="flex min-w-0 items-center gap-2">
+                              <FilePreview file={v.file} />
+                              <p className="truncate">
+                                {v.file.name} ({formatFileSize(v.file.size)})
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <select
+                                value={v.position}
+                                disabled={!scrollSource}
+                                onChange={(e) => {
+                                  const position = Number(e.target.value);
+                                  setScrollVideos((prev) => prev.map((x, i) => (i === idx ? { ...x, position } : x)));
+                                }}
+                                className="rounded-lg border border-white/10 bg-[#0f1f36] px-2 py-1 text-xs outline-none"
+                              >
+                                {scrollSource
+                                  ? Array.from({ length: scrollSectionCount + 1 }).map((_, pos) => (
+                                      <option key={pos} value={pos}>
+                                        {scrollPositionLabel(pos, scrollSectionCount, scrollSource.kind)}
+                                      </option>
+                                    ))
+                                  : <option value={v.position}>Zgjidh fillimisht përmbajtjen</option>}
+                              </select>
+                              <button
+                                type="button"
+                                onClick={() => setScrollVideos((prev) => moveItem(prev, idx, idx - 1))}
+                                disabled={idx === 0}
+                                aria-label="Lart"
+                                className="rounded border border-white/20 px-2 py-0.5 text-[11px] disabled:opacity-30"
+                              >
+                                ↑
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setScrollVideos((prev) => moveItem(prev, idx, idx + 1))}
+                                disabled={idx === scrollVideos.length - 1}
+                                aria-label="Poshtë"
+                                className="rounded border border-white/20 px-2 py-0.5 text-[11px] disabled:opacity-30"
+                              >
+                                ↓
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setScrollVideos((prev) => prev.filter((_, i) => i !== idx))}
+                                className="rounded border border-white/20 px-2 py-0.5 text-[11px]"
+                              >
+                                🗑
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                        <p className="text-[11px] text-white/50">Videot me të njëjtin pozicion shfaqen sipas renditjes këtu (↑ ↓).</p>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              ) : (
               <div className="rounded-2xl border border-white/10 bg-white/5 p-3">
                 <p className="mb-2 text-sm font-semibold text-white">Media</p>
                 {form.template === "social" && form.layoutCols === 3 && form.featuredFullWidth ? (
@@ -945,11 +1317,12 @@ export default function AdminPage() {
                   </label>
                 )}
               </div>
+              )}
               <label className="flex items-center gap-2 text-sm text-white/80">
                 <input type="checkbox" checked={keepValues} onChange={(e) => setKeepValues(e.target.checked)} />
                 Mbaj titullin/përshkrimin për shtim të shpejtë të të dhënave të tjera
               </label>
-              {files.length > 0 && (
+              {form.template !== "scroll" && files.length > 0 && (
                 <div className="rounded-xl border border-white/10 bg-white/5 p-3">
                   <p className="mb-2 text-sm font-semibold">{files.length} file të zgjedhura</p>
                   <div className="max-h-56 space-y-2 overflow-auto text-xs text-white/70">
@@ -993,7 +1366,7 @@ export default function AdminPage() {
                   Featured media: {featuredFiles.length} file
                 </div>
               ) : null}
-              <button disabled={saving} className="w-full rounded-xl bg-indigo-500 px-4 py-2 font-semibold disabled:opacity-50">
+              <button disabled={saving || !!scrollConverting} className="w-full rounded-xl bg-indigo-500 px-4 py-2 font-semibold disabled:opacity-50">
                 {saving ? "Duke ruajtur..." : "Shto prezantim"}
               </button>
               {status && <p className="text-sm text-white/70">{status}</p>}

@@ -6,3 +6,7 @@ body {
   background-color: #000000;
 }
 
+/* Scroll presentations render their own fullscreen-aware "back to top" button. */
+body[data-format="scroll"] .global-scroll-top {
+  display: none;
+}

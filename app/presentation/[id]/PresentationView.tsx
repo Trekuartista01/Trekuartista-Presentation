@@ -5,6 +5,8 @@ import { supabase } from "@/lib/supabase";
 import { createZip } from "@/lib/zip";
 import { createPdfFromJpegImages } from "@/lib/pdf";
 import PresentModeOverlay from "@/app/components/PresentModeOverlay";
+import { ScrollMeta, fetchScrollMeta, loadScrollMeta } from "@/lib/scroll";
+import ScrollPresentation from "./ScrollPresentation";
 
 type PresentationData = {
   id: string;
@@ -51,6 +53,7 @@ export default function PresentationView({ id }: { id: string }) {
   const [customText, setCustomText] = useState("");
   const [mediaTexts, setMediaTexts] = useState<string[]>([]);
   const [isPinned, setIsPinned] = useState(false);
+  const [scrollMeta, setScrollMeta] = useState<ScrollMeta | null>(null);
 
   const [presenting, setPresenting] = useState(false);
   const [downloadMenuOpen, setDownloadMenuOpen] = useState(false);
@@ -87,6 +90,8 @@ export default function PresentationView({ id }: { id: string }) {
           ...row,
           media: [...(row.media ?? [])].sort((a, b) => a.sort_order - b.sort_order),
         });
+        // The shared copy wins; the local one covers Scroll presentations saved before it existed.
+        setScrollMeta((await fetchScrollMeta(id)) ?? loadScrollMeta(id));
         const savedDesigns = localStorage.getItem("treku_presentation_designs");
         if (savedDesigns) {
           const designsMap = JSON.parse(savedDesigns) as Record<
@@ -258,6 +263,8 @@ export default function PresentationView({ id }: { id: string }) {
       </main>
     );
   }
+
+  if (scrollMeta) return <ScrollPresentation item={item} meta={scrollMeta} />;
 
   const links = item.description.match(/https?:\/\/[^\s]+/g) ?? [];
   const hasCustomText = customText.trim().length > 0;
